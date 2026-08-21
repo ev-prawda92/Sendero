@@ -1,0 +1,9 @@
+company_id,growth_gap_pts,founder_experience,reimbursement_model
+novara,11.4,repeat,payer_heavy
+perigon,13.1,first_time,payer_heavy
+wellcase,8.9,first_time,cash_pay_mix
+quorva,6.2,first_time,not_applicable
+brightline,1.8,repeat,not_applicable
+haloscript,2.4,repeat,not_applicable
+medlyra,12.6,repeat,payer_heavy
+carewisp,10.7,first_time,payer_heavy
