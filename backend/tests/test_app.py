@@ -116,3 +116,69 @@ def test_worklist_ranks_by_recoverable_value(client):
 def test_cluster_detail_not_found(client):
     r = client.get("/api/clusters/does-not-exist")
     assert r.status_code == 404
+
+
+def test_classify_with_validate_runs_deflation(client):
+    """
+    validate=true should run permutation_null()+deflate() for real against
+    the same rows just classified, and attach a deflation block to both the
+    immediate response and the stored/retrieved cluster. Small n_permutations
+    here so the test stays fast -- this is still a real run, not a mock.
+    """
+    data = {
+        "file": (io.BytesIO(SAMPLE_CSV.encode()), "portfolio.csv"),
+        "name": "Digital health portfolio (validated)",
+        "metric": "growth_gap_pts",
+        "baseline": "2",
+        "higher_is_worse": "true",
+        "capability_cols": "founder_experience",
+        "config_cols": "reimbursement_model",
+        "capital_exposed": "84000000",
+        "validate": "true",
+        "n_trials_tried": "6",
+        "n_permutations": "40",
+    }
+    r = client.post("/api/classify", data=data, content_type="multipart/form-data")
+    assert r.status_code == 201, r.get_json()
+    result = r.get_json()
+
+    assert "deflation" in result
+    deflation = result["deflation"]
+    assert deflation["n_trials_assumed"] == 6
+    assert 0.0 <= deflation["null_p_after_n_trials"] <= 1.0
+    assert deflation["deflated_confidence_pct"] <= deflation["reported_confidence_pct"]
+    assert deflation["verdict"]
+    print(json.dumps(deflation, indent=2))
+
+    # deflation should also survive the round trip through storage.
+    detail = client.get(f"/api/clusters/{result['id']}").get_json()
+    assert "deflation" in detail
+    assert detail["deflation"]["deflated_confidence_pct"] == deflation["deflated_confidence_pct"]
+
+
+def test_classify_without_validate_has_no_deflation(client):
+    """validate is opt-in -- the default path must not pay for or return it."""
+    data = {
+        "file": (io.BytesIO(SAMPLE_CSV.encode()), "portfolio.csv"),
+        "name": "Unvalidated cluster",
+        "metric": "growth_gap_pts",
+        "baseline": "2",
+    }
+    r = client.post("/api/classify", data=data, content_type="multipart/form-data")
+    result = r.get_json()
+    assert "deflation" not in result
+
+    detail = client.get(f"/api/clusters/{result['id']}").get_json()
+    assert "deflation" not in detail
+
+
+def test_worklist_surfaces_deflated_confidence_when_present(client):
+    data = {
+        "file": (io.BytesIO(SAMPLE_CSV.encode()), "c.csv"),
+        "name": "Cluster C", "metric": "growth_gap_pts", "baseline": "2",
+        "validate": "true", "n_permutations": "30",
+    }
+    client.post("/api/classify", data=data, content_type="multipart/form-data")
+    body = client.get("/api/worklist").get_json()
+    match = [i for i in body["items"] if i["name"] == "Cluster C"][0]
+    assert match["deflated_confidence_pct"] is not None

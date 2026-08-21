@@ -35,6 +35,7 @@ Upload a CSV of portfolio companies (or any per-unit dataset with a performance 
 
 - Cross-model verification (running a call through more than one model and surfacing agreement/disagreement) for IC-bound, high-stakes classifications only — not routine queries, since it's a real cost driver.
 - White-labeling (custom branding, custom domain) once there's a paying customer asking for it specifically.
+- **Selection-bias deflation (shipped, opt-in) — `sendero_engine/validation.py`.** Ported in spirit from NWC Quant's deflated Sharpe ratio (López de Prado 2014): if an analyst tried N cohort/metric combinations before landing on the one being reported, the best-looking result is expected to look better than reality by an amount that grows with N. Sendero doesn't have a returns time series for the analytic Sharpe-estimator-variance formula NWC Quant uses, so this uses a permutation test instead — shuffle the metric column, re-run `classify()` many times, and see how often chance alone produces a result this strong. That empirical null plays the same role NWC Quant's expected-max-Sharpe formula plays analytically. Wired into `POST /api/classify` as `validate=true` (plus `n_trials_tried`, the caller's own honesty input on how many splits they actually tried, and `n_permutations`) — off by default because it's real compute a routine classification shouldn't pay for. Covered by tests in `backend/tests/test_app.py`.
 
 ## What NOT to build before there's a paying design partner
 

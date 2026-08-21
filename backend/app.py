@@ -29,6 +29,7 @@ from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 
 from sendero_engine.classify import classify
+from sendero_engine.validation import deflate, permutation_null
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "sendero.db")
@@ -70,6 +71,12 @@ def init_db():
         )
         """
     )
+    # Additive migration for installs created before the validation layer
+    # existed -- CREATE TABLE IF NOT EXISTS won't add columns to a table
+    # that's already there, so check and ALTER if needed.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(clusters)")}
+    if "deflation_json" not in existing_cols:
+        conn.execute("ALTER TABLE clusters ADD COLUMN deflation_json TEXT")
     conn.commit()
     conn.close()
 
@@ -107,6 +114,16 @@ def classify_upload():
         capability_cols  - comma-separated column names
         config_cols      - comma-separated column names
         capital_exposed  - optional numeric $ at risk, for the recoverable-value calc
+        validate         - "true" to run selection-bias deflation alongside the
+                            classification (default false -- it's real compute,
+                            opt in). See sendero_engine/validation.py.
+        n_trials_tried   - how many different cohort/metric combinations were
+                            actually tried before landing on this result (default 1,
+                            i.e. "no search"). Only used when validate=true; this is
+                            an honesty input from the caller, not something Sendero
+                            can infer on its own.
+        n_permutations   - size of the null distribution to build (default 200).
+                            Only used when validate=true.
 
     Runs Sendero's classify() engine for real on the uploaded rows, stores
     the result, and returns it. Nothing here is mocked.
@@ -127,6 +144,9 @@ def classify_upload():
     config_cols = [c.strip() for c in request.form.get("config_cols", "").split(",") if c.strip()]
     capital_exposed = request.form.get("capital_exposed")
     capital_exposed = float(capital_exposed) if capital_exposed not in (None, "") else None
+    do_validate = request.form.get("validate", "false").lower() == "true"
+    n_trials_tried = int(request.form.get("n_trials_tried", "1") or 1)
+    n_permutations = int(request.form.get("n_permutations", "200") or 200)
 
     try:
         text = f.stream.read().decode("utf-8-sig")
@@ -155,17 +175,28 @@ def classify_upload():
     result["capital_exposed"] = capital_exposed
     result["name"] = name
 
+    deflation = None
+    if do_validate:
+        null = permutation_null(
+            rows, metric, baseline, higher_is_worse,
+            capability_cols, config_cols,
+            n_permutations=n_permutations,
+        )
+        deflation = deflate(result, null, n_trials_tried=n_trials_tried)
+        result["deflation"] = deflation
+
     cluster_id = str(uuid.uuid4())
     db = get_db()
     db.execute(
         """INSERT INTO clusters
            (id, name, metric, baseline, higher_is_worse, capability_cols, config_cols,
-            n_rows, capital_exposed, result_json, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            n_rows, capital_exposed, result_json, deflation_json, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             cluster_id, name, metric, baseline, int(higher_is_worse),
             ",".join(capability_cols), ",".join(config_cols),
             len(rows), capital_exposed, json.dumps(result),
+            json.dumps(deflation) if deflation is not None else None,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -187,6 +218,7 @@ def worklist():
     items = []
     for r in rows:
         result = json.loads(r["result_json"])
+        deflation = json.loads(r["deflation_json"]) if r["deflation_json"] else None
         items.append({
             "id": r["id"],
             "name": r["name"],
@@ -195,6 +227,7 @@ def worklist():
             "capital_exposed": r["capital_exposed"],
             "classification": result.get("classification"),
             "confidence_pct": result.get("confidence_pct"),
+            "deflated_confidence_pct": deflation.get("deflated_confidence_pct") if deflation else None,
             "recoverable_value": result.get("recoverable_value"),
             "created_at": r["created_at"],
         })
@@ -212,6 +245,8 @@ def cluster_detail(cluster_id):
     result["id"] = row["id"]
     result["name"] = row["name"]
     result["created_at"] = row["created_at"]
+    if row["deflation_json"]:
+        result["deflation"] = json.loads(row["deflation_json"])
     return jsonify(result)
 
 
