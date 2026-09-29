@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - name: Tests
+        run: python -m pytest tests/ -v
+      - name: Start the API and classify the sample portfolio
+        run: |
+          python app.py > server.log 2>&1 &
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:5000/api/health && break; sleep 1; done
+          curl -fsS -X POST http://127.0.0.1:5000/api/classify \
+            -F file=@../data/sample_digital_health_portfolio.csv \
+            -F "name=Digital health portfolio" -F metric=growth_gap_pts -F baseline=2 \
+            -F capability_cols=founder_experience -F config_cols=reimbursement_model \
+            -F capital_exposed=84000000 -F validate=true | tee result.json
+          grep -q '"classification"' result.json || { cat server.log; exit 1; }
