@@ -252,4 +252,6 @@ def cluster_detail(cluster_id):
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=True, port=5000)
+    # Debug mode (auto-reload plus the interactive debugger) is opt-in:
+    # SENDERO_DEBUG=1 python app.py
+    app.run(debug=os.environ.get("SENDERO_DEBUG") == "1", port=int(os.environ.get("PORT", "5000")))
